@@ -124,17 +124,17 @@ def get_device(target_device_type: Optional[str] = None) -> torch.device:
     effective_target = target_device_type.lower() if target_device_type else None
     logger.info(f"Attempting to get device. Target: {effective_target or 'auto'}")
 
-    if effective_target == 'tpu':
-        try:
-            import torch_xla.core.xla_model as xm
-            device = xm.xla_device()
-            logger.info(f"Successfully initialized TPU: {str(device)}")
-            logger.info(f"  XLA World Size: {xm.xrt_world_size()}, XLA Ordinal: {xm.get_ordinal()}")
-            return device
-        except ImportError:
-            logger.warning("torch_xla not found. Cannot initialize TPU. Falling back to CUDA/CPU.")
-        except Exception as e:
-            logger.error(f"Failed to initialize TPU with torch_xla: {e}. Falling back to CUDA/CPU.", exc_info=True)
+    # if effective_target == 'tpu':
+    #     try:
+    #         import torch_xla.core.xla_model as xm
+    #         device = xm.xla_device()
+    #         logger.info(f"Successfully initialized TPU: {str(device)}")
+    #         logger.info(f"  XLA World Size: {xm.xrt_world_size()}, XLA Ordinal: {xm.get_ordinal()}")
+    #         return device
+    #     except ImportError:
+    #         logger.warning("torch_xla not found. Cannot initialize TPU. Falling back to CUDA/CPU.")
+    #     except Exception as e:
+    #         logger.error(f"Failed to initialize TPU with torch_xla: {e}. Falling back to CUDA/CPU.", exc_info=True)
 
     if effective_target == 'cuda' or (effective_target is None and torch.cuda.is_available()):
         if torch.cuda.is_available():
