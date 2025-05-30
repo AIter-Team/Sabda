@@ -18,6 +18,7 @@ from tqdm import tqdm
 from transformers import get_scheduler # This import stays
 
 # --- XLA Specific Imports ---
+import torch_xla
 import torch_xla.core.xla_model as xm
 import torch_xla.debug.metrics as met # Optional: for XLA metrics/debug
 
@@ -78,34 +79,33 @@ class Trainer:
             self.sabda_config.data 
         )
         
-        self._train_loader_instance = self._get_train_dataloader()
-        self._eval_loader_instance = self._get_eval_dataloader()
+        self.pin_memory_for_loader = self.run_config.pin_memory_dataloader if self.device.type != 'xla' else False
 
-        # Optional: Wrap DataLoaders with MpDeviceLoader for XLA performance
-        if self.device.type == 'xla' and self.run_config.num_workers_dataloader > 0 : # MpDeviceLoader usually for multi-processing
-            logger_engine.info("Attempting to use MpDeviceLoader for XLA.")
-            try:
-                from torch_xla.distributed.parallel_loader import MpDeviceLoader
-                if self._train_loader_instance:
-                    self._train_loader_instance = MpDeviceLoader(self._train_loader_instance, self.device)
-                    logger_engine.info("Wrapped training DataLoader with MpDeviceLoader for XLA.")
-                if self._eval_loader_instance:
-                    self._eval_loader_instance = MpDeviceLoader(self._eval_loader_instance, self.device)
-                    logger_engine.info("Wrapped evaluation DataLoader with MpDeviceLoader for XLA.")
-            except ImportError:
-                logger_engine.warning("MpDeviceLoader not found or torch_xla.distributed not available. Using standard DataLoader.")
-            except Exception as e:
-                logger_engine.error(f"Error wrapping DataLoader with MpDeviceLoader: {e}. Using standard DataLoader.")
+        self._train_loader_instance = DataLoader(
+            self.train_dataset, 
+            batch_size=self.run_config.batch_size, 
+            shuffle=True, # Shuffle should be fine
+            collate_fn=self.collate_fn, 
+            num_workers=self.run_config.num_workers_dataloader,
+            pin_memory=self.pin_memory_for_loader,
+            drop_last=True 
+        )
+        logger_engine.info(f"Initialized training DataLoader with num_workers={self.run_config.num_workers_dataloader} and pin_memory={self.pin_memory_for_loader}.")
 
-
-        if self._train_loader_instance and hasattr(self.train_dataset, '__len__'):
-            logger_engine.info(f"Training DataLoader diinisialisasi dengan {len(self.train_dataset)} sampel.")
-        if self._eval_loader_instance and hasattr(self.eval_dataset, '__len__') and self.eval_dataset is not None:
-            logger_engine.info(f"Evaluation DataLoader diinisialisasi dengan {len(self.eval_dataset)} sampel.")
-        elif self.eval_dataset:
-             logger_engine.info("Evaluation dataset disediakan, DataLoader diinisialisasi.")
+        if self.eval_dataset and len(self.eval_dataset) > 0:
+            self._eval_loader_instance = DataLoader(
+                self.eval_dataset, 
+                batch_size=self.run_config.batch_size, # Or a specific eval_batch_size
+                shuffle=False,
+                collate_fn=self.collate_fn, 
+                num_workers=self.run_config.num_workers_dataloader,
+                pin_memory=self.pin_memory_for_loader,
+                drop_last=False # Usually False for evaluation
+            )
+            logger_engine.info(f"Initialized evaluation DataLoader with num_workers={self.run_config.num_workers_dataloader} and pin_memory={self.pin_memory_for_loader}.")
         else:
-            logger_engine.info("Tidak ada evaluation dataset yang disediakan atau DataLoader tidak diinisialisasi.")
+            self._eval_loader_instance = None
+            logger_engine.info("No evaluation dataset or it's empty; eval_loader not created.")
 
         self.optimizer = optimizer if optimizer else self._create_optimizer()
         self.scheduler = scheduler if scheduler else self._create_scheduler(self._train_loader_instance)
@@ -336,9 +336,8 @@ class Trainer:
             epoch_loss_sum = 0.0
             num_batches_epoch = 0
             
-            # Determine len_train_loader carefully if it's MpDeviceLoader
             len_train_loader = 0
-            if hasattr(train_loader, '__len__') and not isinstance(train_loader, torch_xla.distributed.parallel_loader.MpDeviceLoader):
+            if hasattr(train_loader, '__len__'):
                 len_train_loader = len(train_loader)
             elif hasattr(self, '_train_len_estimate_for_scheduler') and self._train_len_estimate_for_scheduler > 0: # Use estimate if available
                  len_train_loader = self._train_len_estimate_for_scheduler
