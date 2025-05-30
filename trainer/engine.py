@@ -143,14 +143,26 @@ class Trainer:
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
         logger_engine.debug("Membuat optimizer...")
-        # AdamW8bit might have specific device considerations for XLA,
-        # but usually works if the model parameters are on the XLA device.
-        opt = bnb.optim.AdamW8bit(
-            self.model.parameters(), 
-            lr=self.run_config.learning_rate,
-            betas=(0.9, 0.95) 
-        )
-        logger_engine.info(f"Optimizer: {type(opt).__name__} dibuat dengan LR: {self.run_config.learning_rate:.2e}.")
+        opt: torch.optim.Optimizer # Type hint for clarity
+
+        if self.device.type == 'xla':
+            logger_engine.info(f"Using torch.optim.AdamW for XLA/TPU device with LR: {self.run_config.learning_rate:.2e}")
+            # For XLA, use a standard PyTorch optimizer
+            opt = torch.optim.AdamW(
+                self.model.parameters(), 
+                lr=self.run_config.learning_rate,
+                betas=(0.9, 0.95), # You can make these configurable too
+                # weight_decay=... # Add if you have it in SabdaRunConfig
+            )
+        else: # For CUDA or CPU, you can keep using bitsandbytes if it works there
+            logger_engine.info(f"Using bnb.optim.AdamW8bit for {self.device.type} device with LR: {self.run_config.learning_rate:.2e}")
+            opt = bnb.optim.AdamW8bit(
+                self.model.parameters(), 
+                lr=self.run_config.learning_rate,
+                betas=(0.9, 0.95) 
+            )
+        
+        logger_engine.info(f"Optimizer: {type(opt).__name__} successfully created.")
         return opt
 
     def _create_scheduler(self, train_loader: DataLoader) -> torch.optim.lr_scheduler._LRScheduler:
