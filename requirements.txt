@@ -1,6 +1,3 @@
-torch
-torchaudio
-torch-xla>=2.0
 descript-audio-codec
 transformers
 tqdm
