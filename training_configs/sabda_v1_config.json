@@ -1,0 +1,46 @@
+{
+    "version": "1.0.0",
+    "data": {
+        "dataset_path": "datasets",
+        "txt_len": 128,
+        "audio_len": 384,
+        "channels": 9,
+        "delay_pattern": [
+            0, 
+            8, 
+            9, 
+            10, 
+            11, 
+            12, 
+            13, 
+            14, 
+            15
+        ]
+    },
+    "model": {
+        "encoder": {
+            "n_layer": 2,
+            "d_embd": 1024,
+            "d_ff": 4096,
+            "n_heads": 8,
+            "d_heads": 128
+        },
+        "decoder": {
+            "n_layer": 4,
+            "d_embd": 2048,
+            "d_ff": 8192,
+            "n_gqa_heads": 16,
+            "d_gqa_heads": 128,
+            "kv_heads": 4,
+            "n_cross_heads": 16,
+            "d_cross_heads": 128
+
+        },
+        "src_vocab_size": 256,
+        "tgt_vocab_size": 1028,
+        "dropout": 0.0
+    },
+    "train_args": {
+        "dtype": "bfloat16"
+    }
+}

@@ -1,0 +1,4 @@
+torch
+torch-xla>=2.0
+descript-audio-codec
+bitsandbytes
