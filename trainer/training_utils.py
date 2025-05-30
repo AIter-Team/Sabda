@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 # Corrected import from dataclasses
 from dataclasses import dataclass, field, fields as dataclass_fields, MISSING
-from typing import Optional, List
+from typing import Optional, List, Union
 
 import torch
 # torch_xla import is handled within get_device to avoid ImportError if not in TPU env
