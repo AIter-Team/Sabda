@@ -6,7 +6,7 @@ import os
 import random
 from pathlib import Path
 # Corrected import from dataclasses
-from dataclasses import dataclass, field as dataclass_field_function, fields as dataclass_fields, MISSING
+from dataclasses import dataclass, field, fields as dataclass_fields, MISSING
 from typing import Optional, List
 
 import torch
