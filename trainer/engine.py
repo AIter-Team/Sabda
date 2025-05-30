@@ -18,9 +18,9 @@ from tqdm import tqdm
 from transformers import get_scheduler # This import stays
 
 # --- XLA Specific Imports ---
-import torch_xla
-import torch_xla.core.xla_model as xm
-import torch_xla.debug.metrics as met # Optional: for XLA metrics/debug
+# import torch_xla
+# import torch_xla.core.xla_model as xm
+# import torch_xla.debug.metrics as met # Optional: for XLA metrics/debug
 
 # Assuming SabdaSynthesizer might be type hinted or used if passed for eval, adjust import as necessary
 # from sabda.synthesizer import SabdaSynthesizer # If you need to type hint it
