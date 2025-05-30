@@ -435,7 +435,7 @@ class Trainer:
                  self.evaluate()
                  self.model.train() # Ensure model is back in train mode
 
-            self._save_checkpoint(current_loss=avg_epoch_loss, filename_prefix="ckpt_last_epoch") # Save last epoch
+            self._save_checkpoint(current_loss=avg_epoch_loss, filename_prefix="last_model") # Save last epoch
         
         if self.device.type == 'xla':
             logger_engine.info("XLA Metrics Report (Final):\n%s", met.metrics_report())
@@ -540,8 +540,8 @@ class Trainer:
 
 
     def _save_checkpoint(self, current_loss: float, is_best: bool = False, filename_prefix: str = "ckpt"):
-        checkpoint_filename = f"{filename_prefix}_epoch_{self.current_epoch+1}_step_{self.global_step}.pth"
-        checkpoint_path = self.checkpoint_dir / checkpoint_filename
+        checkpoint_filename = f"{filename_prefix}.pth" if filename_prefix == "last_model" else f"{filename_prefix}_step_{self.global_step}.pth"
+        checkpoint_path = (self.checkpoint_dir / "best_model.pth") if is_best else (self.checkpoint_dir / checkpoint_filename)
         
         # For XLA, xm.get_optimizer_state_dict might be more robust if optimizer itself was XLA-wrapped.
         # Standard self.optimizer.state_dict() usually works if model was moved to device.
@@ -568,11 +568,6 @@ class Trainer:
             else:
                 torch.save(save_state, checkpoint_path)
                 logger_engine.info(f"\nCheckpoint disimpan ke: {checkpoint_path}")
-
-            if is_best:
-                best_model_path = self.checkpoint_dir / "best_model.pth"
-                shutil.copy2(checkpoint_path, best_model_path)
-                logger_engine.info(f"Model terbaik juga disalin ke: {best_model_path}")
         except Exception as e:
             logger_engine.error(f"\nGagal menyimpan checkpoint ke {checkpoint_path}: {e}", exc_info=True)
 
