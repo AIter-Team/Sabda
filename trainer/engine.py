@@ -171,7 +171,7 @@ class Trainer:
         if hasattr(train_loader, '__len__') and len(train_loader) > 0 and train_loader.batch_size is not None : # Standard DataLoader
             num_training_steps_per_epoch = math.ceil(len(train_loader.dataset) / train_loader.batch_size) if train_loader.drop_last is False else len(train_loader)
             # MpDeviceLoader might not have a direct len, handle appropriately if you switch
-        elif self.device.type == 'xla' and isinstance(train_loader, torch_xla.distributed.parallel_loader.MpDeviceLoader):
+        elif self.device.type == 'xla':
              # For MpDeviceLoader, length might need to be calculated based on dataset size and world size
              # This is a simplification; proper distributed setup is more complex.
              # For now, let's assume an estimate if direct len is not available.
@@ -321,7 +321,7 @@ class Trainer:
                            f"{'='*60}")
 
         train_loader = self._train_loader_instance
-        if not train_loader or (hasattr(train_loader, '__len__') and len(train_loader) == 0 and not isinstance(train_loader, torch_xla.distributed.parallel_loader.MpDeviceLoader)): # MpDeviceLoader might not have len
+        if not train_loader or (hasattr(train_loader, '__len__') and len(train_loader) == 0):
             logger_engine.error("Training DataLoader kosong atau tidak tersedia. Tidak dapat memulai training.")
             return
 
@@ -478,7 +478,7 @@ class Trainer:
         total_val_loss = 0.0; num_val_batches = 0
         with torch.inference_mode():
             len_eval_loader = 0
-            if hasattr(eval_loader, '__len__') and not isinstance(eval_loader, torch_xla.distributed.parallel_loader.MpDeviceLoader):
+            if hasattr(eval_loader, '__len__'):
                  len_eval_loader = len(eval_loader)
             elif hasattr(self.eval_dataset, '__len__') and self.run_config.batch_size > 0:
                  world_size = xm.xrt_world_size() if self.device.type == 'xla' else 1
