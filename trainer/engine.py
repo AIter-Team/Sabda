@@ -17,6 +17,7 @@ from transformers import get_scheduler
 from sabda.config_schema import SabdaConfig, DataConfig
 from sabda.layers import SabdaModel
 from sabda.dataloader import create_sabda_collate_fn
+from sabda.synthesizer import SabdaSynthesizer
 
 from .training_utils import SabdaRunConfig, get_device 
 
@@ -32,6 +33,7 @@ class Trainer:
         self,
         model: SabdaModel,
         dac_model: DAC, 
+        synthesizer: SabdaSynthesizer,
         sabda_config: SabdaConfig,
         run_config: SabdaRunConfig, # run_config.run_name diasumsikan sudah unik,
                                     # dan run_config.output_dir / run_config.run_name adalah path yang sudah ada.
@@ -47,6 +49,7 @@ class Trainer:
         self.sabda_config = sabda_config
         self.run_config = run_config 
         self.dac_model = dac_model
+        self.synthesizer = synthesizer
 
         # Penentuan Device
         if isinstance(device, str):
@@ -56,7 +59,6 @@ class Trainer:
         else:
             self.device = get_device(self.run_config.device_target)
         
-        # Path run utama yang unik (sudah dibuat oleh pemanggil, misal train.py)
         self.final_run_path = self.run_config.output_dir / self.run_config.run_name
 
         self.model.to(self.device)
@@ -329,7 +331,7 @@ class Trainer:
                                f"\n    Global step: {self.global_step}"
                                f"\n--------------------------------------")
             self.evaluate()
-            self._save_checkpoint(current_loss=avg_epoch_loss, filename_prefix="ckpt_end_of_epoch")
+            self._save_checkpoint(current_loss=avg_epoch_loss, filename_prefix="last_model")
         self.writer.close(); logger_engine.info(f"\n{'='*20} Proses Training Selesai {'='*20}")
 
     def evaluate(self): #
@@ -347,12 +349,18 @@ class Trainer:
         else: log_eval_header += "\n    (Jumlah sampel validasi tidak dapat ditentukan)"
         logger_engine.info(log_eval_header)
             
-        self.model.eval(); total_val_loss = 0.0; num_val_batches = 0
-        with torch.inference_mode():
+        total_val_loss = 0.0; num_val_batches = 0
+
+        # Ensure model is in eval mode for the entire evaluation
+        original_model_mode_is_training = self.model.training
+        self.model.eval()
+
+        with torch.inference_mode(): # Disables gradient calculations
             len_eval_loader = len(eval_loader) if hasattr(eval_loader, '__len__') else None
             progress_bar_val = tqdm(enumerate(eval_loader), total=len_eval_loader, desc="Evaluating", position=0, leave=True)
             for batch_idx, batch_cpu in progress_bar_val:
                 batch = self._prepare_batch_for_device(batch_cpu)
+                # Calculate loss (existing logic)
                 logits = self.model(
                     src_tokens=batch['src_tokens'], tgt_tokens=batch['tgt_tokens'],
                     src_pos=batch['src_positions'], tgt_pos=batch['tgt_positions'],
@@ -361,24 +369,72 @@ class Trainer:
                 )
                 loss = self._calculate_loss(logits, batch['tgt_tokens'], batch['tgt_lens'])
                 if torch.isnan(loss) or torch.isinf(loss):
-                    logger_engine.warning(f"Loss validasi NaN atau Inf terdeteksi. Melewati batch ini."); continue
-                total_val_loss += loss.item(); num_val_batches += 1
+                    logger_engine.warning(f"Loss validasi NaN atau Inf terdeteksi. Melewati batch ini.")
+                    continue
+                total_val_loss += loss.item()
+                num_val_batches += 1
                 progress_bar_val.set_postfix({"val_loss_batch": f"{loss.item():.4f}"})
         
         avg_val_loss = total_val_loss / num_val_batches if num_val_batches > 0 else float('inf')
-        self.writer.add_scalar('Loss/validation', avg_val_loss, self.global_step)
-        log_eval_summary = f"    Validation Loss: {avg_val_loss:.4f}"
+        if self.writer: # Check if SummaryWriter is initialized
+            self.writer.add_scalar('Loss/validation', avg_val_loss, self.global_step)
+        
+        log_eval_summary = f"\n--- Evaluasi pada Step {self.global_step} ---"
+        log_eval_summary += f"\n    Validation Loss: {avg_val_loss:.4f}"
+
+        # --- Audio Generation during Evaluation ---
+        if self.run_config.eval_prompts and self.synthesizer:
+            logger_engine.info("--- Generating Audio Samples for Evaluation ---")
+            # self.model.eval() is already active from above
+            # self.synthesizer.model and self.synthesizer.dac_model are set to eval in SabdaSynthesizer.__init__
+
+            for i, prompt_text in enumerate(self.run_config.eval_prompts):
+                try:
+                    logger_engine.info(f"  Generating audio for prompt ({i+1}/{len(self.run_config.eval_prompts)}): \"{prompt_text[:60]}...\"")
+                    
+                    waveform_tensor = self.synthesizer.generate(
+                        text=prompt_text,
+                        max_new_tokens=self.run_config.eval_gen_max_new_tokens,
+                        temperature=self.run_config.eval_gen_temperature,
+                        top_p=self.run_config.eval_gen_top_p if (self.run_config.eval_gen_top_p is not None and self.run_config.eval_gen_top_p < 1.0) else None, # Pass None if not used
+                        cfg_scale=self.run_config.eval_gen_cfg_scale
+                    ) 
+
+                    if waveform_tensor is not None and waveform_tensor.numel() > 0:
+                        waveform_to_log = waveform_tensor.squeeze().cpu() 
+                        
+                        sample_rate = self.synthesizer.dac_model.sample_rate # descriptive-audio-codec has this attribute
+                                            
+                        if self.writer: # Check if SummaryWriter is initialized
+                            self.writer.add_audio(
+                                f"Audio_Eval/Prompt_{i+1}", 
+                                waveform_to_log,
+                                self.global_step,
+                                sample_rate=sample_rate 
+                            )
+                        logger_engine.info(f"    Logged audio for prompt {i+1} to TensorBoard (sr: {sample_rate}).")
+                    else:
+                        logger_engine.warning(f"    Audio generation returned None or empty for prompt {i+1}.")
+
+                except Exception as e:
+                    logger_engine.error(f"    Error generating/logging audio for prompt '{prompt_text}': {e}", exc_info=True)
+            logger_engine.info("--- Finished Generating Audio Samples ---")
+        # --- End of Audio Generation ---
+
         if avg_val_loss < self.best_eval_loss:
             self.best_eval_loss = avg_val_loss
             log_eval_summary += f"\n    New best validation loss: {self.best_eval_loss:.4f}. Menyimpan model terbaik."
             self._save_checkpoint(current_loss=avg_val_loss, is_best=True)
+        
         logger_engine.info(log_eval_summary + "\n--- Selesai Evaluasi ---")
-        self.model.train()
+        
+        if original_model_mode_is_training: # Restore model to training mode if it was training before eval
+            self.model.train()
 
     def _save_checkpoint(self, current_loss: float, is_best: bool = False, filename_prefix: str = "ckpt"): #
         # checkpoint_dir sekarang adalah self.checkpoint_dir
-        checkpoint_filename = f"{filename_prefix}_epoch_{self.current_epoch+1}_step_{self.global_step}.pth"
-        checkpoint_path = self.checkpoint_dir / checkpoint_filename
+        checkpoint_filename = f"{filename_prefix}.pth" if filename_prefix=="last_model" else f"{filename_prefix}_step_{self.global_step}.pth"
+        checkpoint_path = (self.checkpoint_dir / "best_model.pth") if is_best else (self.checkpoint_dir / checkpoint_filename)
         save_state = {
             'epoch': self.current_epoch, 'global_step': self.global_step,
             'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict(),
@@ -386,13 +442,9 @@ class Trainer:
         }
         if self.scheduler: save_state['scheduler_state_dict'] = self.scheduler.state_dict()
         try:
-            torch.save(save_state, checkpoint_path); logger_engine.info(f"\nCheckpoint disimpan ke: {checkpoint_path}")
-            if is_best:
-                best_model_path = self.checkpoint_dir / "best_model.pth"
-                # Menggunakan shutil.copy2 sebagai fallback jika symlink bermasalah atau tidak diinginkan
-                # atau jika ingin salinan fisik. Untuk sekarang, kita gunakan copy2.
-                shutil.copy2(checkpoint_path, best_model_path)
-                logger_engine.info(f"Model terbaik juga disalin ke: {best_model_path}")
+            torch.save(save_state, checkpoint_path)
+            logger_engine.info(f"\nCheckpoint disimpan ke: {checkpoint_path}")
+
         except Exception as e: logger_engine.error(f"\nGagal menyimpan checkpoint ke {checkpoint_path}: {e}", exc_info=True)
 
     def _load_checkpoint(self, checkpoint_path: Path) -> Tuple[int, int, float]: #

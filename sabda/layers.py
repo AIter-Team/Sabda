@@ -224,6 +224,47 @@ class KVCache:
         
         self.current_idx = prefill_len
 
+    def get_kv_for_attention(self, current_k_step: torch.Tensor, current_v_step: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Concatenates historical K/V from cache with the K/V of the current step.
+        current_k_step, current_v_step: Tensors for the current step, shape (B, n_heads, 1, d_heads).
+        """
+        # Ensure current_k_step and current_v_step have the expected shape (B, N, 1, H)
+        if not (current_k_step.ndim == 4 and current_k_step.shape[2] == 1 and \
+                current_v_step.ndim == 4 and current_v_step.shape[2] == 1):
+            raise ValueError(f"current_k_step/v_step must have shape (B, N, 1, H), "
+                             f"got k: {current_k_step.shape}, v: {current_v_step.shape}")
+
+        if self.current_idx == 0: # No past history in cache
+            return current_k_step, current_v_step
+        else:
+            past_k = self.k[:, :, :self.current_idx, :]
+            past_v = self.v[:, :, :self.current_idx, :]
+            
+            attn_k = torch.cat((past_k, current_k_step), dim=2) # Concatenate along sequence_length dim
+            attn_v = torch.cat((past_v, current_v_step), dim=2)
+            return attn_k, attn_v
+
+    def update_cache(self, k_onestep: torch.Tensor, v_onestep: torch.Tensor):
+        """
+        Adds the K/V for the current single step to the cache.
+        k_onestep, v_onestep: Tensors for the current step, shape (B, n_heads, 1, d_heads).
+        """
+        if not (k_onestep.ndim == 4 and k_onestep.shape[2] == 1 and \
+                v_onestep.ndim == 4 and v_onestep.shape[2] == 1):
+            raise ValueError(f"k_onestep/v_onestep for update_cache must have shape (B, N, 1, H), "
+                             f"got k: {k_onestep.shape}, v: {v_onestep.shape}")
+
+        if self.current_idx >= self.max_len:
+            # This condition should ideally be handled by the generation loop stopping criterion
+            # or by implementing a sliding window if max_len is exceeded.
+            # For now, we raise an error as it implies max_new_tokens might be too large for cache.
+            raise ValueError(f"KVCache is full (current_idx: {self.current_idx}, max_len: {self.max_len}). Cannot update.")
+        
+        self.k[:, :, self.current_idx : self.current_idx + 1, :] = k_onestep
+        self.v[:, :, self.current_idx : self.current_idx + 1, :] = v_onestep
+        self.current_idx += 1
+
 
 class Attention(nn.Module):
     def __init__(
@@ -370,7 +411,7 @@ class Attention(nn.Module):
             elif queries.shape[0] != keys.shape[0]:
                 raise ValueError(f"Batch size mismatch between query ({queries.shape[0]}) and K/V cache ({keys.shape[0]}) for cross-attention.")
             
-
+            new_kv_cache = None
         else:
             keys = self.rope(self.W_K(X_kv), position=kv_pos).transpose(1, 2)
             values = self.W_V(X_kv).transpose(1, 2)
@@ -384,19 +425,25 @@ class Attention(nn.Module):
                 values_gqa = values
 
             # Cache Management for Self-Attention
-            if cache is None: # Training mode or Encoder self-attention
-                keys = keys_gqa
+            if cache is None: # Training mode or Encoder self-attention (no KVCache object passed)
+                keys = keys_gqa # keys_gqa here is the full sequence if training
                 values = values_gqa
-            else: # Decoder self-attention saat inferensi (cache disediakan)
-                if prefill: # Mode prefill (misalnya, memproses prompt audio)
-                    keys = keys_gqa   # K/V saat ini adalah K/V dari seluruh prompt
+                new_kv_cache = None
+            else: # Decoder self-attention with KVCache object passed
+                if prefill: # Mode prefill (e.g., processing an audio prompt during inference)
+                    # keys_gqa and values_gqa are from the entire prompt
+                    cache.prefill_kv(keys_gqa, values_gqa) 
+                    keys = keys_gqa # Use the full prompt K/V for attention
                     values = values_gqa
-                    cache.prefill_kv(keys, values) # Isi cache dengan K/V prompt ini
-                else: # Mode decoding langkah demi langkah (autoregresif)
-                    # Save current K/V and update into cache
-                    new_kv_cache = (keys_gqa, values_gqa)
-                    # Get concatenated K/V (cache K/V + current K/V)
+                    new_kv_cache = None # Cache is prefilled, no new K/V to return for update via this path
+                else: # Autoregressive decoding step (prefill=False)
+                    # keys_gqa and values_gqa are for the CURRENT SINGLE STEP: (B, n_query_heads, 1, d_heads)
+                    
+                    # Get full K,V sequence for attention (history + current step)
                     keys, values = cache.get_kv_for_attention(keys_gqa, values_gqa)
+                    
+                    # The K,V for the current step needs to be returned so it can be added to cache by the caller
+                    new_kv_cache = (keys_gqa, values_gqa) 
 
         # Calculate Attention Scores
         attn_output = F.scaled_dot_product_attention(
@@ -844,3 +891,73 @@ class SabdaModel(nn.Module):
             logits = logits.to(torch.float32)
 
         return logits
+    
+    def decode_one_step(
+        self,
+        current_tgt_tokens: torch.Tensor,    # Shape: (B, 1, C) - Input DAC tokens for the current step (B=batch_size, C=num_channels)
+        current_tgt_pos: torch.Tensor,       # Shape: (B, 1) - Current time position
+        encoder_output: torch.Tensor,        # Shape: (B, S_txt, D_encoder) - Output from the encoder
+        src_pos: Optional[torch.Tensor],     # Shape: (B, S_txt) - Positions for encoder output (for RoPE in cross-attn if needed)
+        dec_cross_attn_mask_step: Optional[torch.Tensor], # Shape: (B, N_cross_heads, 1, S_txt) - Cross-attention mask
+        self_attention_caches_list: List[KVCache],  # List of KVCache objects for self-attention (updated in-place)
+        cross_attention_caches_list: List[KVCache]  # List of pre-computed KVCache objects for cross-attention (read-only)
+    ) -> torch.Tensor:                          # Returns logits of shape (B, 1, C, V_tgt)
+        
+        deterministic = True # Always deterministic for generation steps
+        device = current_tgt_tokens.device
+        batch_size = current_tgt_tokens.shape[0]
+        num_channels = self.config.data.channels
+
+        # 1. Input Embedding for the current step
+        # current_tgt_tokens is (B, 1, C)
+        decoder_hidden_states_step = None
+        for i in range(num_channels):
+            channel_token_ids = current_tgt_tokens[:, 0, i]  # (B,)
+            channel_emb = self.audio_embeddings[i](channel_token_ids)  # (B, D_decoder)
+            if decoder_hidden_states_step is None:
+                decoder_hidden_states_step = channel_emb.unsqueeze(1)  # (B, 1, D_decoder)
+            else:
+                decoder_hidden_states_step = decoder_hidden_states_step + channel_emb.unsqueeze(1)
+        
+        # No dropout during deterministic generation
+        # if not deterministic:
+        #     decoder_hidden_states_step = self.decoder_dropout(decoder_hidden_states_step)
+
+        # 2. Loop through Decoder Layers
+        for layer_idx, decoder_layer in enumerate(self.decoder_layers):
+            self_attn_cache_for_layer = self_attention_caches_list[layer_idx]
+            cross_attn_cache_for_layer = cross_attention_caches_list[layer_idx]
+
+            # Output from layer, and the (key, value) of the current step's self-attention for caching
+            decoder_hidden_states_step, sa_key_value_current_step = decoder_layer.forward(
+                x=decoder_hidden_states_step,              # (B, 1, D_decoder)
+                encoder_output=encoder_output,             # (B, S_txt, D_encoder)
+                tgt_pos=current_tgt_pos,                   # (B, 1)
+                src_pos=src_pos,                           # (B, S_txt)
+                self_attn_mask=None,                       # For single step with KVCache, causality is handled by cache
+                cross_attn_mask=dec_cross_attn_mask_step,  # (B, N_cross_heads, 1, S_txt)
+                self_attn_kv_cache=self_attn_cache_for_layer,
+                cross_attn_kv_cache=cross_attn_cache_for_layer,
+                deterministic=deterministic,
+                prefill=False  # CRITICAL: prefill is False for autoregressive self-attention steps
+            )
+            
+            # Update the self-attention KVCache with the K,V from the current step
+            if sa_key_value_current_step is not None:
+                # sa_key_value_current_step should be a tuple (k_current_step, v_current_step)
+                # each of shape (B, n_gqa_heads, 1, d_gqa_heads)
+                self_attn_cache_for_layer.update_cache(sa_key_value_current_step[0], sa_key_value_current_step[1])
+            else:
+                # This case should ideally not happen if KVCache is active for self-attention
+                logger_layers = logging.getLogger(__name__) # Get a logger instance
+                logger_layers.warning(f"Self-attention for layer {layer_idx} did not return K/V for cache update during decode_one_step.")
+
+
+        # 3. Final Normalization and Logits Projection
+        decoder_output_final_step = self.decoder_norm(decoder_hidden_states_step)
+        logits_step = self.logits_projection(decoder_output_final_step)  # (B, 1, C, V_tgt)
+
+        if self.logits_in_fp32 and logits_step.dtype != torch.float32:
+            logits_step = logits_step.to(torch.float32)
+
+        return logits_step

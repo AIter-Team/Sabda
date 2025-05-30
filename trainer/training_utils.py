@@ -4,7 +4,7 @@ import os
 import random
 from pathlib import Path
 from dataclasses import dataclass, field, fields as dataclass_fields
-from typing import Optional
+from typing import Optional, List
 
 import torch
 
@@ -42,9 +42,35 @@ class SabdaRunConfig:
     grad_accum_steps: int = field(default=1, metadata={"help": "Number of steps to accumulate gradients."})
     
     # Logging, Saving, and Evaluation Frequency
-    eval_steps: int = field(default=200, metadata={"help": "Frequency (in steps) for evaluation."})
-    save_steps: int = field(default=1000, metadata={"help": "Frequency (in steps) to save a checkpoint."})
-    log_steps: int = field(default=50, metadata={"help": "Frequency (in steps) to log training metrics."})
+    eval_steps: int = field(default=200, metadata={"help": "Frequency (in steps) for evaluation."}) # Existing
+    save_steps: int = field(default=1000, metadata={"help": "Frequency (in steps) to save a checkpoint."}) # Existing
+    log_steps: int = field(default=50, metadata={"help": "Frequency (in steps) to log training metrics."}) # Existing
+
+    # NEW: Evaluation Audio Generation Config
+    eval_prompts: Optional[List[str]] = field(
+        default_factory=lambda: [
+            "Halo Sabda TTS, ini adalah suara percobaan.",
+            "Selamat datang di Indonesia, negeri yang indah."
+            # Add more Indonesian prompts as desired
+        ],
+        metadata={"help": "List of sentences to generate audio for during evaluation."}
+    )
+    eval_gen_max_new_tokens: Optional[int] = field(
+        default=None, # If None, SabdaSynthesizer.generate will use SabdaConfig.data.audio_len
+        metadata={"help": "Max new tokens for eval generation."}
+    )
+    eval_gen_temperature: float = field(
+        default=0.7, 
+        metadata={"help": "Temperature for evaluation generation."}
+    )
+    eval_gen_top_p: Optional[float] = field(
+        default=0.9, 
+        metadata={"help": "Top_p for evaluation generation (set to None or >=1.0 to disable)."}
+    )
+    eval_gen_cfg_scale: float = field(
+        default=3.0, 
+        metadata={"help": "CFG scale for evaluation generation."}
+    )
 
     # Dataset and DataLoader
     train_split_ratio: float = field(default=0.9, metadata={"help": "Ratio for training set split (e.g., 0.9 for 90% train)."})
