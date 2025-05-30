@@ -2,8 +2,8 @@
     "version": "1.0.0",
     "data": {
         "dataset_path": "datasets",
-        "txt_len": 128,
-        "audio_len": 384,
+        "txt_len": 512,
+        "audio_len": 1536,
         "channels": 9,
         "delay_pattern": [
             0, 
@@ -19,14 +19,14 @@
     },
     "model": {
         "encoder": {
-            "n_layer": 2,
+            "n_layer": 12,
             "d_embd": 1024,
             "d_ff": 4096,
             "n_heads": 8,
             "d_heads": 128
         },
         "decoder": {
-            "n_layer": 4,
+            "n_layer": 18,
             "d_embd": 2048,
             "d_ff": 8192,
             "n_gqa_heads": 16,
