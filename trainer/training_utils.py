@@ -8,11 +8,13 @@ from pathlib import Path
 # Corrected import from dataclasses
 from dataclasses import dataclass, field, fields as dataclass_fields, MISSING
 from typing import Optional, List, Union
+from datetime import datetime
 
 import torch
 # torch_xla import is handled within get_device to avoid ImportError if not in TPU env
 
 logger_utils = logging.getLogger(__name__)
+
 
 @dataclass
 class SabdaRunConfig:
@@ -29,7 +31,7 @@ class SabdaRunConfig:
         metadata={"help": "Directory to save checkpoints and logs."}
     )
     run_name: str = field(
-        default="sabda_run",
+        default=datetime.now().strftime("%f%S%M%H%y%U%j%Z"),
         metadata={"help": "Name for the current training run (used for TensorBoard and checkpoint subdirectories)."}
     )
     resume_checkpoint_path: Optional[str] = field(
