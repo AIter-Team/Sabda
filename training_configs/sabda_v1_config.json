@@ -19,14 +19,14 @@
     },
     "model": {
         "encoder": {
-            "n_layer": 6,
+            "n_layer": 8,
             "d_embd": 1024,
             "d_ff": 4096,
             "n_heads": 8,
             "d_heads": 128
         },
         "decoder": {
-            "n_layer": 9,
+            "n_layer": 12,
             "d_embd": 2048,
             "d_ff": 8192,
             "n_gqa_heads": 16,
